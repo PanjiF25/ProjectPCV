@@ -36,21 +36,6 @@ Sistem motion capture full body untuk VTuber menggunakan **MediaPipe** dan **VSe
 
 ---
 
-## 📋 System Requirements
-
-### Hardware Minimum
-- **CPU**: Intel i5 / AMD Ryzen 5 (gen 7000 series recommended)
-- **RAM**: 8GB (16GB optimal)
-- **GPU**: Integrated graphics (GTX/RTX series recommended)
-- **Webcam**: 480p @ 30fps minimum (720p recommended)
-
-### Tested Configuration
-- **Laptop**: Lenovo LOQ
-- **CPU**: AMD Ryzen 5 7000 Series
-- **GPU**: NVIDIA RTX 4050 (6GB VRAM)
-- **RAM**: 16GB
-- **Performance**: 28-32 FPS stable
-
 ### Software Dependencies
 - **Python**: 3.8 atau lebih baru
 - **VSeeFace**: v1.13.38c4 (included dalam repo)

@@ -3,7 +3,7 @@
 
 ---
 
-## 📋 Daftar Isi
+## Daftar Isi
 - [Pendahuluan](#pendahuluan)
 - [Teknologi yang Digunakan](#teknologi-yang-digunakan)
 - [Fitur Utama](#fitur-utama)
@@ -14,7 +14,7 @@
 
 ---
 
-## 🎯 Pendahuluan
+## Pendahuluan
 
 ### Latar Belakang
 Proyek ini merupakan sistem **motion capture full body** untuk aplikasi VTuber yang dikembangkan menggunakan webcam standar dan teknologi computer vision. Berbeda dengan sistem motion capture tradisional yang membutuhkan perangkat mahal (ratusan juta rupiah), sistem ini memanfaatkan **MediaPipe** dan **VSeeFace** untuk menciptakan solusi tracking yang lebih terjangkau namun tetap akurat.
@@ -51,7 +51,7 @@ Mengembangkan sistem tracking komprehensif yang dapat:
 
 ---
 
-## 🎨 Fitur Utama
+## Fitur Utama
 
 ### 1. **Tracking Kepala (Head Tracking)**
 Menggunakan algoritma **Perspective-n-Point (PnP)** untuk menghitung rotasi kepala:
@@ -105,7 +105,7 @@ curl = (dist_tip_to_wrist / dist_palm) normalized
 
 ---
 
-## ⚙️ Cara Kerja Sistem
+## Cara Kerja Sistem
 
 ### Alur Kerja Per Frame
 
@@ -169,7 +169,7 @@ Mengurangi bandwidth komunikasi:
 
 ---
 
-## 💻 Implementasi
+## Implementasi
 
 ### Spesifikasi Hardware
 - **Webcam**: HD 720p atau lebih tinggi
@@ -267,7 +267,7 @@ while cap.isOpened():
 
 ---
 
-## 📊 Hasil dan Performa
+## Hasil dan Performa
 
 ### Performa Sistem
 - **FPS**: 28-32 (stabil)
@@ -287,19 +287,19 @@ while cap.isOpened():
 | Jari | ★★★☆☆ | Cukup Baik |
 
 ### Kelebihan
-✅ Hanya butuh webcam standar  
-✅ Tracking full body tanpa sensor tambahan  
-✅ Real-time dengan latency rendah  
-✅ Gratis dan open-source  
-✅ Performa stabil untuk streaming  
-✅ Support 10 jari (full hand tracking)
+- Hanya butuh webcam standar  
+- Tracking full body tanpa sensor tambahan  
+- Real-time dengan latency rendah  
+- Gratis dan open-source  
+- Performa stabil untuk streaming  
+- Support 10 jari (full hand tracking)
 
 ### Keterbatasan
-❌ Memerlukan pencahayaan yang baik  
-❌ Tracking jari sensitif terhadap oklusi  
-❌ Background harus kontras dengan subjek  
-❌ Memerlukan GPU untuk performa optimal  
-❌ Terkadang jitter pada gerakan cepat
+- Memerlukan pencahayaan yang baik  
+- Tracking jari sensitif terhadap oklusi  
+- Background harus kontras dengan subjek  
+- Memerlukan GPU untuk performa optimal  
+- Terkadang jitter pada gerakan cepat
 
 ### Kondisi Optimal
 - Pencahayaan: Terang merata dari depan

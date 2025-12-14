@@ -24,8 +24,9 @@ USE_GPU = True  # GPU acceleration
 ARM_INVERT_X = 1.0  
 ARM_INVERT_Y = 1.0 
 ARM_INVERT_Z = 1.0 
-ARM_GAIN_XY  = 1.0  # Diturunkan untuk gerakan lebih natural
-ARM_GAIN_Z   = 0.6  # Ditingkatkan sedikit untuk depth yang lebih baik 
+ARM_GAIN_XY  = 0.95  # Reduced sedikit untuk gerakan lebih smooth
+ARM_GAIN_Z   = 0.55  # Reduced untuk depth lebih stabil
+ARM_SMOOTHING = 0.7  # Exponential smoothing factor untuk arm 
 
 # 2. JARI (Finger: L=Z, R=Z | Sign: L=1, R=-1)
 # Axis Index: 0=X, 1=Y, 2=Z
@@ -33,26 +34,30 @@ FINGER_AXIS_L = 2
 FINGER_AXIS_R = 2
 FINGER_SIGN_L = 1.0
 FINGER_SIGN_R = -1.0
-FINGER_SENSITIVITY = 1.2  # Balanced sensitivity
+FINGER_SENSITIVITY = 1.1  # Reduced untuk less twitchy
+FINGER_DEADZONE = 0.08  # Deadzone untuk finger curl detection
 
 # 3. JEMPOL (Thumb: L=Y, R=Y | Sign: L=-1, R=-1)
 THUMB_AXIS_L = 1
 THUMB_AXIS_R = 1
 THUMB_SIGN_L = 1.0  # Inverted untuk left
 THUMB_SIGN_R = -1.0  # Inverted untuk right
-THUMB_SENSITIVITY = 1.25  # Disesuaikan untuk responsivitas optimal
+THUMB_SENSITIVITY = 1.15  # Reduced untuk responsivitas lebih stabil
+THUMB_DEADZONE = 0.1  # Deadzone lebih besar untuk thumb
 
 # ==========================================
 
 # --- TUNING LAINNYA ---
 EYE_Y_OFFSET = 0.0  # Natural position
-GAZE_SENSITIVITY = 1.3   # Balanced sensitivity
+GAZE_SENSITIVITY = 1.1   # Reduced untuk gerakan mata lebih halus
 PITCH_CORRECTION_FACTOR = 0.01
-DEADZONE = 0.45     # Optimal untuk stabilitas
+DEADZONE = 0.55     # Ditingkatkan untuk mengurangi jitter
+ADAPTIVE_DEADZONE_MULTIPLIER = 1.5  # Deadzone lebih besar saat gerakan cepat
 NECK_RATIO = 0.5
 EAR_THRESH_CLOSE, EAR_THRESH_OPEN = 0.12, 0.20  # Untuk mata sipit & kacamata
 MOUTH_OPEN_MIN, MOUTH_OPEN_MAX = 5.0, 40.0
-SMOOTHING_WINDOW = 2  # Minimal temporal smoothing  
+SMOOTHING_WINDOW = 4  # Ditingkatkan untuk gerakan lebih smooth
+OSC_RATE_LIMIT = 0.016  # ~60Hz max untuk mengurangi bandwidth  
 
 # --- HELPER FUNCTIONS ---
 def euler_to_quaternion(pitch, yaw, roll):
@@ -120,6 +125,31 @@ def get_relative_iris(face_landmarks, iris_idx, inner_idx, outer_idx, img_w, img
 def map_range(value, in_min, in_max, out_min, out_max):
     return (value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
 
+def send_osc_throttled(address, value, threshold=0.001):
+    """Send OSC message dengan throttling untuk reduce bandwidth"""
+    global last_sent_values
+    key = address + str(value[0] if isinstance(value, list) else value)
+    
+    # Check jika nilai berubah signifikan
+    if key in last_sent_values:
+        if isinstance(value, list) and len(value) > 4:  # Quaternion
+            old_val = last_sent_values[key]
+            if all(abs(v - o) < threshold for v, o in zip(value[1:], old_val[1:])):
+                return  # Skip jika perubahan terlalu kecil
+    
+    client.send_message(address, value)
+    last_sent_values[key] = value
+
+def smooth_quaternion(q_new, q_prev, alpha=0.7):
+    """Exponential smoothing for quaternions"""
+    return [alpha * n + (1 - alpha) * p for n, p in zip(q_new, q_prev)]
+
+def apply_deadzone(value, prev_value, deadzone):
+    """Apply deadzone to reduce jitter"""
+    if abs(value - prev_value) < deadzone:
+        return prev_value
+    return value
+
 def get_finger_curl(landmarks, tip_idx, knuckle_idx, wrist_idx, is_thumb=False):
     tip = np.array([landmarks.landmark[tip_idx].x, landmarks.landmark[tip_idx].y, landmarks.landmark[tip_idx].z])
     wrist = np.array([landmarks.landmark[wrist_idx].x, landmarks.landmark[wrist_idx].y, landmarks.landmark[wrist_idx].z])
@@ -128,16 +158,17 @@ def get_finger_curl(landmarks, tip_idx, knuckle_idx, wrist_idx, is_thumb=False):
     dist_palm = np.linalg.norm(knuckle - wrist)
     ratio = dist_tip_wrist / (dist_palm + 1e-6)
     
-    # Threshold yang lebih baik untuk deteksi curl
+    # Threshold yang lebih baik untuk deteksi curl dengan range lebih stabil
     if is_thumb:
-        # Range disesuaikan untuk tracking jempol yang akurat
-        curl = (ratio - 1.5) / (0.75 - 1.5)  # Range: open=1.5, close=0.75
-        sensitivity = THUMB_SENSITIVITY if 'THUMB_SENSITIVITY' in globals() else FINGER_SENSITIVITY
+        # Range disesuaikan untuk tracking jempol yang akurat dan smooth
+        curl = np.clip((ratio - 1.6) / (0.8 - 1.6), 0.0, 1.0)  # Range dipersempit
+        sensitivity = (THUMB_SENSITIVITY if 'THUMB_SENSITIVITY' in globals() else FINGER_SENSITIVITY) * 0.95
     else:
-        curl = (ratio - 1.8) / (0.9 - 1.8)  # Range dioptimalkan untuk 4 jari lainnya
-        sensitivity = FINGER_SENSITIVITY
+        # Range lebih stabil dengan clipping langsung
+        curl = np.clip((ratio - 1.85) / (0.95 - 1.85), 0.0, 1.0)
+        sensitivity = FINGER_SENSITIVITY * 0.95  # Sedikit reduced untuk less jittery
     
-    return max(0.0, min(1.0, curl)) * sensitivity
+    return curl * sensitivity
 
 # --- CLASS STABILIZER ---
 class Stabilizer:
@@ -153,6 +184,16 @@ class Stabilizer:
         self.filter.correct(np.array([[np.float32(measurement)]]))
         self.state = self.filter.statePost
         return self.state[0][0]
+
+# Moving Average Filter untuk smoothing tambahan
+class MovingAverageFilter:
+    def __init__(self, window_size=4):
+        self.window_size = window_size
+        self.values = deque(maxlen=window_size)
+    
+    def update(self, value):
+        self.values.append(value)
+        return sum(self.values) / len(self.values)
 
 # --- INIT ---
 print("=" * 60)
@@ -176,18 +217,25 @@ holistic = mp_holistic.Holistic(
 )
 client = udp_client.SimpleUDPClient(OSC_IP, OSC_PORT)
 
-# Stabilizers - Dioptimalkan untuk smoothness maksimal
-stab_pitch = Stabilizer(cov_process=0.01, cov_measure=0.15)
-stab_yaw   = Stabilizer(cov_process=0.01, cov_measure=0.15)
-stab_roll  = Stabilizer(cov_process=0.01, cov_measure=0.15)
-stab_eye_x = Stabilizer(cov_process=0.001, cov_measure=0.2)  # Sangat halus untuk eye tracking
-stab_eye_y = Stabilizer(cov_process=0.001, cov_measure=0.2)
-stab_spine_roll = Stabilizer(cov_process=0.015, cov_measure=0.15)
-stab_spine_yaw  = Stabilizer(cov_process=0.015, cov_measure=0.15)
+# Stabilizers - Dioptimalkan untuk smoothness maksimal dengan parameter lebih agresif
+stab_pitch = Stabilizer(cov_process=0.005, cov_measure=0.25)  # Lebih smooth
+stab_yaw   = Stabilizer(cov_process=0.005, cov_measure=0.25)
+stab_roll  = Stabilizer(cov_process=0.005, cov_measure=0.25)
+stab_eye_x = Stabilizer(cov_process=0.0005, cov_measure=0.3)  # Sangat halus untuk eye tracking
+stab_eye_y = Stabilizer(cov_process=0.0005, cov_measure=0.3)
+stab_spine_roll = Stabilizer(cov_process=0.01, cov_measure=0.2)
+stab_spine_yaw  = Stabilizer(cov_process=0.01, cov_measure=0.2)
 
 # Stabilizer Jari (10 Jari) - Smoothing ditingkatkan untuk gerakan natural
-stab_fingers_L = [Stabilizer(cov_process=0.03, cov_measure=0.12) for _ in range(5)]
-stab_fingers_R = [Stabilizer(cov_process=0.03, cov_measure=0.12) for _ in range(5)]
+stab_fingers_L = [Stabilizer(cov_process=0.02, cov_measure=0.18) for _ in range(5)]
+stab_fingers_R = [Stabilizer(cov_process=0.02, cov_measure=0.18) for _ in range(5)]
+
+# Moving Average Filters untuk layer kedua smoothing
+ma_pitch = MovingAverageFilter(SMOOTHING_WINDOW)
+ma_yaw = MovingAverageFilter(SMOOTHING_WINDOW)
+ma_roll = MovingAverageFilter(SMOOTHING_WINDOW)
+ma_eye_x = MovingAverageFilter(SMOOTHING_WINDOW)
+ma_eye_y = MovingAverageFilter(SMOOTHING_WINDOW)
 
 model_points = np.array([
     (0.0, 0.0, 0.0), 
@@ -205,11 +253,25 @@ last_raw_pitch, last_raw_yaw, last_raw_roll = 0, 0, 0
 blink_l_state, blink_r_state = 0.0, 0.0
 prev_time = 0
 frame_count = 0  # Frame counter
+last_osc_time = 0  # OSC rate limiting
+last_sent_values = {}  # Cache untuk menghindari duplicate messages
 
 # Config Jari
 FINGER_NAMES = ["Thumb", "Index", "Middle", "Ring", "Little"]
 FINGER_INDICES = [(4, 2), (8, 5), (12, 9), (16, 13), (20, 17)] 
 BONE_SUFFIXES = ["Proximal", "Intermediate", "Distal"]
+
+# Cache untuk arm smoothing (exponential smoothing)
+prev_arm_rotations = {
+    "LeftUpperArm": [0, 0, 0, 1],
+    "LeftLowerArm": [0, 0, 0, 1],
+    "RightUpperArm": [0, 0, 0, 1],
+    "RightLowerArm": [0, 0, 0, 1]
+}
+
+# Cache untuk finger curl previous values
+prev_finger_curls_L = [0.0] * 5
+prev_finger_curls_R = [0.0] * 5
 
 # --- CAMERA --- Balanced settings
 cap = cv2.VideoCapture(WEBCAM_ID, cv2.CAP_DSHOW)  # DirectShow untuk Windows
@@ -282,17 +344,30 @@ while cap.isOpened():
         dX = (fl.landmark[263].x * img_w) - (fl.landmark[33].x * img_w)
         curr_pitch, curr_yaw, curr_roll = angles[0], angles[1], math.degrees(math.atan2(dY, dX))
 
-        # Deadzone
-        if abs(curr_pitch - last_raw_pitch) < DEADZONE: curr_pitch = last_raw_pitch
+        # Adaptive Deadzone - lebih besar saat perubahan cepat untuk reduce jitter
+        velocity_pitch = abs(curr_pitch - last_raw_pitch)
+        velocity_yaw = abs(curr_yaw - last_raw_yaw)
+        velocity_roll = abs(curr_roll - last_raw_roll)
+        
+        adaptive_deadzone_p = DEADZONE * (1.0 + (velocity_pitch / 10.0) * ADAPTIVE_DEADZONE_MULTIPLIER)
+        adaptive_deadzone_y = DEADZONE * (1.0 + (velocity_yaw / 10.0) * ADAPTIVE_DEADZONE_MULTIPLIER)
+        adaptive_deadzone_r = DEADZONE * (1.0 + (velocity_roll / 10.0) * ADAPTIVE_DEADZONE_MULTIPLIER)
+        
+        if abs(curr_pitch - last_raw_pitch) < adaptive_deadzone_p: curr_pitch = last_raw_pitch
         else: last_raw_pitch = curr_pitch
-        if abs(curr_yaw - last_raw_yaw) < DEADZONE: curr_yaw = last_raw_yaw
+        if abs(curr_yaw - last_raw_yaw) < adaptive_deadzone_y: curr_yaw = last_raw_yaw
         else: last_raw_yaw = curr_yaw
-        if abs(curr_roll - last_raw_roll) < DEADZONE: curr_roll = last_raw_roll
+        if abs(curr_roll - last_raw_roll) < adaptive_deadzone_r: curr_roll = last_raw_roll
         else: last_raw_roll = curr_roll
 
-        # Stabilize dengan Kalman filter (cukup smooth)
-        s_pitch = stab_pitch.update(curr_pitch)
-        s_yaw, s_roll = stab_yaw.update(curr_yaw), stab_roll.update(curr_roll)
+        # Double-stage filtering: Kalman + Moving Average
+        k_pitch = stab_pitch.update(curr_pitch)
+        k_yaw = stab_yaw.update(curr_yaw)
+        k_roll = stab_roll.update(curr_roll)
+        
+        s_pitch = ma_pitch.update(k_pitch)
+        s_yaw = ma_yaw.update(k_yaw)
+        s_roll = ma_roll.update(k_roll)
 
         # Neck + Head split
         neck_pitch, neck_yaw, neck_roll = s_pitch * NECK_RATIO, s_yaw * NECK_RATIO, s_roll * NECK_RATIO
@@ -316,15 +391,19 @@ while cap.isOpened():
         
         # Outlier rejection - jika perbedaan kedua mata terlalu besar, ada error
         eye_diff = abs(lx - rx)
-        if eye_diff < 0.5:  # Threshold untuk detect outlier
-            avg_x = np.clip((lx + rx)/2.0, -0.8, 0.8)  # Batasi range horizontal
-            avg_y = np.clip(((ly + ry)/2.0) - (s_pitch * PITCH_CORRECTION_FACTOR) + EYE_Y_OFFSET, -0.6, 0.6)  # Batasi range vertikal
+        if eye_diff < 0.4:  # Threshold lebih ketat untuk detect outlier
+            avg_x = np.clip((lx + rx)/2.0, -0.7, 0.7)  # Range lebih terbatas
+            avg_y = np.clip(((ly + ry)/2.0) - (s_pitch * PITCH_CORRECTION_FACTOR) + EYE_Y_OFFSET, -0.5, 0.5)
         else:
             # Gunakan nilai sebelumnya jika outlier detected
             avg_x, avg_y = stab_eye_x.state[0][0], stab_eye_y.state[0][0]
         
         if not (blink_l_state > 0.5 or blink_r_state > 0.5):
-            smooth_eye_x, smooth_eye_y = stab_eye_x.update(avg_x), stab_eye_y.update(avg_y)
+            # Double-stage filtering untuk mata
+            k_eye_x = stab_eye_x.update(avg_x)
+            k_eye_y = stab_eye_y.update(avg_y)
+            smooth_eye_x = ma_eye_x.update(k_eye_x)
+            smooth_eye_y = ma_eye_y.update(k_eye_y)
         else:
             smooth_eye_x, smooth_eye_y = stab_eye_x.state[0][0], stab_eye_y.state[0][0]
         
@@ -348,8 +427,8 @@ while cap.isOpened():
         client.send_message("/VMC/Ext/Blend/Val", ["A", float(mouth_open)])
         
         # Eye rotation dengan multiplier yang lebih kecil untuk gerakan natural
-        eye_mult_x = smooth_eye_x * GAZE_SENSITIVITY * 25.0  # Reduced dari 70
-        eye_mult_y = smooth_eye_y * GAZE_SENSITIVITY * 20.0  # Reduced dari 70
+        eye_mult_x = smooth_eye_x * GAZE_SENSITIVITY * 20.0  # Further reduced untuk lebih smooth
+        eye_mult_y = smooth_eye_y * GAZE_SENSITIVITY * 16.0  # Further reduced untuk lebih smooth
         eqx, eqy, eqz, eqw = euler_to_quaternion(math.radians(eye_mult_y), math.radians(eye_mult_x), 0)
         client.send_message("/VMC/Ext/Bone/Pos", ["LeftEye", 0.0, 0.0, 0.0, float(eqx), float(eqy), float(eqz), float(eqw)])
         client.send_message("/VMC/Ext/Bone/Pos", ["RightEye", 0.0, 0.0, 0.0, float(eqx), float(eqy), float(eqz), float(eqw)])
@@ -381,26 +460,34 @@ while cap.isOpened():
         sqx, sqy, sqz, sqw = euler_to_quaternion(0, math.radians(spine_yaw), math.radians(spine_roll))
         client.send_message("/VMC/Ext/Bone/Pos", ["Spine", 0.0, 0.0, 0.0, float(sqx), float(sqy), float(sqz), float(sqw)])
 
-        # Left arm
+        # Left arm - dengan exponential smoothing
         if lm[11].visibility > 0.5 and lm[13].visibility > 0.5:
             start, end = to_unity_vec(get_vec(11)), to_unity_vec(get_vec(13))
-            q_lu = get_limb_rotation(start, end, [1.0, 0.0, 0.0])
+            q_lu_raw = get_limb_rotation(start, end, [1.0, 0.0, 0.0])
+            q_lu = smooth_quaternion(q_lu_raw, prev_arm_rotations["LeftUpperArm"], ARM_SMOOTHING)
+            prev_arm_rotations["LeftUpperArm"] = q_lu
             client.send_message("/VMC/Ext/Bone/Pos", ["LeftUpperArm", 0.0, 0.0, 0.0, float(q_lu[0]), float(q_lu[1]), float(q_lu[2]), float(q_lu[3])])
             
             if lm[15].visibility > 0.5:
                 start, end = to_unity_vec(get_vec(13)), to_unity_vec(get_vec(15))
-                q_ll = get_limb_rotation(start, end, [1.0, 0.0, 0.0])
+                q_ll_raw = get_limb_rotation(start, end, [1.0, 0.0, 0.0])
+                q_ll = smooth_quaternion(q_ll_raw, prev_arm_rotations["LeftLowerArm"], ARM_SMOOTHING)
+                prev_arm_rotations["LeftLowerArm"] = q_ll
                 client.send_message("/VMC/Ext/Bone/Pos", ["LeftLowerArm", 0.0, 0.0, 0.0, float(q_ll[0]), float(q_ll[1]), float(q_ll[2]), float(q_ll[3])])
 
-        # Right arm
+        # Right arm - dengan exponential smoothing
         if lm[12].visibility > 0.5 and lm[14].visibility > 0.5:
             start, end = to_unity_vec(get_vec(12)), to_unity_vec(get_vec(14))
-            q_ru = get_limb_rotation(start, end, [-1.0, 0.0, 0.0])
+            q_ru_raw = get_limb_rotation(start, end, [-1.0, 0.0, 0.0])
+            q_ru = smooth_quaternion(q_ru_raw, prev_arm_rotations["RightUpperArm"], ARM_SMOOTHING)
+            prev_arm_rotations["RightUpperArm"] = q_ru
             client.send_message("/VMC/Ext/Bone/Pos", ["RightUpperArm", 0.0, 0.0, 0.0, float(q_ru[0]), float(q_ru[1]), float(q_ru[2]), float(q_ru[3])])
             
             if lm[16].visibility > 0.5:
                 start, end = to_unity_vec(get_vec(14)), to_unity_vec(get_vec(16))
-                q_rl = get_limb_rotation(start, end, [-1.0, 0.0, 0.0])
+                q_rl_raw = get_limb_rotation(start, end, [-1.0, 0.0, 0.0])
+                q_rl = smooth_quaternion(q_rl_raw, prev_arm_rotations["RightLowerArm"], ARM_SMOOTHING)
+                prev_arm_rotations["RightLowerArm"] = q_rl
                 client.send_message("/VMC/Ext/Bone/Pos", ["RightLowerArm", 0.0, 0.0, 0.0, float(q_rl[0]), float(q_rl[1]), float(q_rl[2]), float(q_rl[3])])
 
     # === 3. FINGER TRACKING ===
@@ -417,6 +504,12 @@ while cap.isOpened():
             for i, (name, (tip, knuckle)) in enumerate(zip(FINGER_NAMES, FINGER_INDICES)):
                 is_thumb = (name == "Thumb")
                 raw_curl = get_finger_curl(results.left_hand_landmarks, tip, knuckle, 0, is_thumb)
+                
+                # Apply deadzone untuk reduce jitter
+                deadzone = THUMB_DEADZONE if is_thumb else FINGER_DEADZONE
+                raw_curl = apply_deadzone(raw_curl, prev_finger_curls_L[i], deadzone)
+                prev_finger_curls_L[i] = raw_curl
+                
                 curl = stab_fingers_L[i].update(raw_curl)
                 
                 # Gunakan Axis & Sign dari Kalibrasi
@@ -448,6 +541,12 @@ while cap.isOpened():
             for i, (name, (tip, knuckle)) in enumerate(zip(FINGER_NAMES, FINGER_INDICES)):
                 is_thumb = (name == "Thumb")
                 raw_curl = get_finger_curl(results.right_hand_landmarks, tip, knuckle, 0, is_thumb)
+                
+                # Apply deadzone untuk reduce jitter
+                deadzone = THUMB_DEADZONE if is_thumb else FINGER_DEADZONE
+                raw_curl = apply_deadzone(raw_curl, prev_finger_curls_R[i], deadzone)
+                prev_finger_curls_R[i] = raw_curl
+                
                 curl = stab_fingers_R[i].update(raw_curl)
                 
                 if is_thumb:

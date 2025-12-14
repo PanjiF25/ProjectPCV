@@ -32,7 +32,7 @@ Mengembangkan sistem tracking komprehensif yang dapat:
 
 ---
 
-## 🛠️ Teknologi yang Digunakan
+## Teknologi yang Digunakan
 
 ### Library Utama
 - **OpenCV** - Pengambilan dan pemrosesan frame dari webcam
@@ -310,7 +310,7 @@ while cap.isOpened():
 
 ---
 
-## 🎓 Kesimpulan
+## Kesimpulan
 
 ### Pencapaian
 Proyek ini berhasil mengimplementasikan sistem motion capture full body yang komprehensif untuk aplikasi VTuber. Sistem dapat melakukan tracking:
